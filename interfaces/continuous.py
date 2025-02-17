@@ -29,7 +29,7 @@ class Interfaces(nn.Module, ABC):
         - Define transport path (\alpha_t & \sigma_t)
         - Sample t
         - Sample X_t
-    - Give x-predictions for sampling
+    - Give tangent for sampling
 
     Required RNG Key:
     - 
@@ -89,7 +89,7 @@ class Interfaces(nn.Module, ABC):
 
     @abstractmethod
     def pred(self, x_t: jnp.ndarray, t: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
-        r"""Predict clean x according to the defined interface.
+        r"""Predict ODE tangent according to the defined interface.
         
         Args:
         - x_t: input noisy sample.
@@ -149,9 +149,9 @@ class SiTInterface(Interfaces):
         rng = self.make_rng('time')
 
         if self.train_time_dist_type == TrainingTimeDistType.UNIFORM:
-            return self.bcast_right(jax.random.uniform(rng, shape=shape[0]))
+            return jax.random.uniform(rng, shape=shape)
         elif self.train_time_dist_type == TrainingTimeDistType.LOGNORMAL:
-            return self.bcast_right(jax.nn.sigmoid(jax.random.normal(rng, shape=shape[0]) * self.t_sigma + self.t_mu))
+            return jax.nn.sigmoid(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu)
         else:
             raise ValueError(f"Training Time Distribution Type {self.train_time_dist_type} not supported.")
     
@@ -161,23 +161,23 @@ class SiTInterface(Interfaces):
         return jax.random.normal(rng, shape=shape) * self.n_sigma + self.n_mu
     
     def sample_x_t(self, x: jnp.ndarray, n: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+        t = self.bcast_right(t, x)
         return (1 - t) * x + t * n
     
     def target(self, x: jnp.ndarray, n: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
         return x - n
     
     def pred(self, x_t: jnp.ndarray, t: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
-        net_out = self.network(x_t, t, *args, **kwargs)
-        return x_t + t * net_out 
+        return self.network(x_t, t, *args, **kwargs)
     
     def loss(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
-        t = self.sample_t(x.shape)
+        t = self.sample_t((x.shape[0],))
         n = self.sample_n(x.shape)
 
         x_t = self.sample_x_t(x, n, t)
         target = self.target(x, n, t)
 
-        net_out = self.network(x_t, t.flatten(), *args, **kwargs)
+        net_out = self.network(x_t, t, *args, **kwargs)
 
         return self.mean_flat((net_out - target) ** 2)
 
@@ -211,11 +211,11 @@ class EDMInterface(Interfaces):
         rng = self.make_rng('time')
 
         if self.train_time_dist_type == TrainingTimeDistType.UNIFORM:
-            return self.bcast_right(jax.random.uniform(rng, shape=shape))
+            return jax.random.uniform(rng, shape=shape)
         elif self.train_time_dist_type == TrainingTimeDistType.LOGNORMAL:
-            return self.bcast_right(jax.exp(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu))
+            return jax.exp(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu)
         elif self.train_time_dist_type == TrainingTimeDistType.LOGITNORMAL:
-            return self.bcast_right(jax.nn.sigmoid(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu))
+            return jax.nn.sigmoid(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu)
         else:
             raise ValueError(f"Training Time Distribution Type {self.train_time_dist_type} not supported.")
     
@@ -225,19 +225,20 @@ class EDMInterface(Interfaces):
         return jax.random.normal(rng, shape=shape) * self.n_sigma + self.n_mu
     
     def sample_x_t(self, x: jnp.ndarray, n: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
-        return x + t * n
+        return x + self.bcast_right(t) * n
     
     def target(self, x: jnp.ndarray, n: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
         return x
     
     def pred(self, x_t: jnp.ndarray, t: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
-        return self.network(x_t, t, *args, **kwargs)
+        return (x_t - self.network(x_t, t, *args, **kwargs)) / t
     
     def loss(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
-        sigma = self.sample_t(x.shape)
+        sigma = self.sample_t((x.shape[0],))
         n = self.sample_n(x.shape)
 
         x_t = self.sample_x_t(x, n, sigma)
+        target = self.target(x, n, sigma)
 
         # preconditionings
         c_ckip = self.x_sigma ** 2 / (sigma ** 2 + self.x_sigma ** 2)
@@ -245,10 +246,10 @@ class EDMInterface(Interfaces):
         c_in = 1 / jnp.sqrt(self.x_sigma ** 2 + sigma ** 2)
         c_noise = jnp.log(sigma) / 4
 
-        F_x = self.network((c_in * x_t), c_noise.flatten(), *args, **kwargs)  # F_x
-        D_x = c_ckip * x_t + c_out * F_x  # D_x
+        F_x = self.network((self.bcast_right(c_in) * x_t), c_noise, *args, **kwargs)  # F_x
+        D_x = self.bcast_right(c_ckip) * x_t + self.bcast_right(c_out) * F_x  # D_x
 
-        return self.mean_flat((D_x - x) ** 2)
+        return self.mean_flat((D_x - target) ** 2)
 
 
 
