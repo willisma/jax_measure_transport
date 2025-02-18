@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 
 # deps
-from continuous import SiTInterface, EDMInterface
+from interfaces.continuous import SiTInterface
 
 class DummyMlp(nn.Module):
     in_dim: int
