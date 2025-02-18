@@ -180,6 +180,9 @@ class SiTInterface(Interfaces):
         net_out = self.network(x_t, t, *args, **kwargs)
 
         return self.mean_flat((net_out - target) ** 2)
+    
+    def __call__(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
+        return self.loss(x, *args, **kwargs)
 
 
 class EDMInterface(Interfaces):
