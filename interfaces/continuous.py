@@ -110,11 +110,13 @@ class Interfaces(nn.Module, ABC):
         """
     
     ########## Helper Functions ##########
-    def mean_flat(self, x: jnp.ndarray) -> jnp.ndarray:
+    @staticmethod
+    def mean_flat(x: jnp.ndarray) -> jnp.ndarray:
         r"""Take mean w.r.t. all dimensions of x except the first."""
         return jnp.mean(x, axis=list(range(1, x.ndim)))
     
-    def bcast_right(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+    @staticmethod
+    def bcast_right(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
         r"""Broadcast x to the right to match the shape of y."""
         assert len(y.shape) >= x.ndim
         return x.reshape(x.shape + (1,) * (len(y.shape) - x.ndim))
@@ -202,8 +204,8 @@ class EDMInterface(Interfaces):
     train_time_dist_type: TrainingTimeDistType = TrainingTimeDistType.LOGNORMAL
 
     # hyperparams
-    t_mu: float = 0.
-    t_sigma: float = 1.0
+    t_mu: float = -1.2
+    t_sigma: float = 1.2
 
     n_mu: float = 0.
     n_sigma: float = 1.0
@@ -216,7 +218,7 @@ class EDMInterface(Interfaces):
         if self.train_time_dist_type == TrainingTimeDistType.UNIFORM:
             return jax.random.uniform(rng, shape=shape)
         elif self.train_time_dist_type == TrainingTimeDistType.LOGNORMAL:
-            return jax.exp(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu)
+            return jnp.exp(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu)
         elif self.train_time_dist_type == TrainingTimeDistType.LOGITNORMAL:
             return jax.nn.sigmoid(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu)
         else:
@@ -228,13 +230,13 @@ class EDMInterface(Interfaces):
         return jax.random.normal(rng, shape=shape) * self.n_sigma + self.n_mu
     
     def sample_x_t(self, x: jnp.ndarray, n: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
-        return x + self.bcast_right(t) * n
+        return x + self.bcast_right(t, n) * n
     
     def target(self, x: jnp.ndarray, n: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
         return x
     
     def pred(self, x_t: jnp.ndarray, t: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
-        return (x_t - self.network(x_t, t, *args, **kwargs)) / t
+        return (x_t - self.network(x_t, t, *args, **kwargs)) / self.bcast_right(t, x_t)
     
     def loss(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
         sigma = self.sample_t((x.shape[0],))
@@ -244,15 +246,18 @@ class EDMInterface(Interfaces):
         target = self.target(x, n, sigma)
 
         # preconditionings
-        c_ckip = self.x_sigma ** 2 / (sigma ** 2 + self.x_sigma ** 2)
+        c_skip = self.x_sigma ** 2 / (sigma ** 2 + self.x_sigma ** 2)
         c_out = sigma * self.x_sigma / jnp.sqrt(sigma ** 2 + self.x_sigma ** 2)
         c_in = 1 / jnp.sqrt(self.x_sigma ** 2 + sigma ** 2)
         c_noise = jnp.log(sigma) / 4
 
-        F_x = self.network((self.bcast_right(c_in) * x_t), c_noise, *args, **kwargs)  # F_x
-        D_x = self.bcast_right(c_ckip) * x_t + self.bcast_right(c_out) * F_x  # D_x
+        F_x = self.network((self.bcast_right(c_in, x_t) * x_t), c_noise, *args, **kwargs)  # F_x
+        D_x = self.bcast_right(c_skip, x_t) * x_t + self.bcast_right(c_out, F_x) * F_x  # D_x
 
         return self.mean_flat((D_x - target) ** 2)
+    
+    def __call__(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
+        return self.loss(x, *args, **kwargs)
 
 
 
