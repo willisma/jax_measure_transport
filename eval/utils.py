@@ -1,12 +1,24 @@
 """File containing the util functions for evaluation."""
 
 # built-in libs
+import math
 import os
 import requests
 import tempfile
 
 # external libs
+import flax
+import jax
+import jax.numpy as jnp
+import ml_collections
+import numpy as np
+import scipy
+import torch
 from tqdm import tqdm
+
+# deps
+from eval import inception
+from samplers import samplers
 
 
 def download(url, ckpt_dir=None):
@@ -42,7 +54,111 @@ def download(url, ckpt_dir=None):
     return ckpt_file
 
 
-def get(dictionary, key):
-    if dictionary is None or key not in dictionary:
-        return None
-    return dictionary[key]
+def all_gather(x: jnp.ndarray) -> jnp.ndarray:
+    """convenient wrapper for jax.lax.all_gather"""
+    assert x.shape[0] == jax.local_device_count(), f"Expected first dimension to be the number of local devices, got {x.shape[0]} != {jax.local_device_count()}"
+    all_gather_fn = lambda x: jax.lax.all_gather(x, axis_name='data', tiled=True)
+    all_gathered = jax.pmap(all_gather_fn, axis_name='data')(x)[0]
+    return all_gathered
+
+
+def lock():
+    """Hold the lock until all processes sync up."""
+    all_gather(jnp.ones((jax.local_device_count(),1))).block_until_ready()
+
+
+def build_keep_indices(
+    item_subset: list[int],
+    batch_size: int,
+    len_dataset: int
+):
+    """
+    This function simulates the behavior of a DataLoader with the item_subset sampler.
+    The intent is to find and remove the indices of images that are processed twice to avoid 
+    biasing FID.
+    """
+    keep_indices = jnp.array(item_subset) < len_dataset
+    final_indices = []
+    for batch_start in range(0, keep_indices.shape[0], batch_size):
+        indices_in = keep_indices[batch_start:batch_start+batch_size].reshape((jax.local_device_count(), -1))
+        batch_keep_indices = all_gather(indices_in).reshape(-1)
+        final_indices.append(batch_keep_indices)
+    return final_indices
+
+
+def build_eval_loader(
+    dataset: torch.utils.data.Dataset,
+    batch_size: int,
+    num_workers: int = 8,
+) -> torch.utils.data.DataLoader:
+    """Build the dataloader for evaluation."""
+    dataset_len = len(dataset)
+    n = jax.process_count()
+    pad_factor = batch_size
+    
+    # pad the dataset to be divisible by the batch size and local_device_count:
+    if (pad_factor // n) % jax.local_device_count() != 0:
+        pad_factor *= jax.local_device_count()
+
+    dataset_len = int(math.ceil(dataset_len / pad_factor)) * pad_factor
+
+    item_subset = [(i * n + jax.process_index()) for i in range((dataset_len - 1) // n + 1)]
+    keep_indices = build_keep_indices(item_subset, batch_size, len(dataset))
+    item_subset = [i % len(dataset) for i in item_subset]
+    loader = torch.utils.data.DataLoader(
+        dataset, 
+        sampler=item_subset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=False,
+        shuffle=False,  # important
+        worker_init_fn=None,
+        persistent_workers=True,
+        timeout=60.0
+    )
+    return loader, keep_indices
+
+
+def get_detector(config: ml_collections.ConfigDict):
+    """Get the sampler for fid evaluation."""
+    if config.eval.detector == 'inception':
+        detector = inception.InceptionV3(pretrained=True)
+
+        def inception_forward(
+            renormalize_data: bool = False,
+            run_all_gather: bool = True
+        ):
+            """Forward pass of the inception model to extract features."""
+            params = detector.init(jax.random.PRNGKey(0), jnp.ones((1, 299, 299, 3)))
+            params = flax.jax_utils.replicate(params)
+
+            def forward(params, x):
+                if renormalize_data:
+                    x = x.astype(jnp.float32) / 127.5 - 1
+                
+                # TODO: ablate following resize choices
+                x = jax.image.resize(x, (299, 299), method='bilinear')
+                features = detector.apply(params, x, train=False).squeeze()
+                if run_all_gather:
+                    features = jax.lax.all_gather(features, axis_name='data', tiled=True)
+                
+                return features
+
+            return params, jax.pmap(forward, axis_name='data')
+        
+        return inception_forward(renormalize_data=True, run_all_gather=True)
+    else:
+        # TODO: add DINOv2
+        raise NotImplementedError
+
+
+def calculate_fid(
+    stats: dict[str, np.ndarray],
+    ref_stats: dict[str, np.ndarray]
+) -> float:
+    """Calculate the FID score between stats and ref_stats."""
+
+    m = np.square(stats['mu'] - ref_stats['mu']).sum()
+    s, _ = scipy.linalg.sqrtm(np.dot(stats['sigma'], ref_stats['sigma']), disp=False)
+    return float(np.real(m + np.trace(stats['sigma'] + ref_stats['sigma'] - s * 2)))

@@ -56,7 +56,8 @@ class Samplers(ABC):
     @abstractmethod
     def forward(
         self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
-        g_net: nn.Module | None = None, guidance_scale: float = 1.0
+        g_net: nn.Module | None = None, guidance_scale: float = 1.0,
+        **net_kwargs
     ):
         r"""A single forward step in integration.
 
@@ -67,6 +68,7 @@ class Samplers(ABC):
         - t_next: next time step.
         - g_net: guidance network.
         - guidance_scale: scale of guidance.
+        - net_kwargs: extra net args.
 
         Return:
         - x_next: next state.
@@ -75,7 +77,8 @@ class Samplers(ABC):
     @abstractmethod
     def last_step(
         self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_last: jnp.ndarray,
-        g_net: nn.Module | None = None, guidance_scale: float = 1.0
+        g_net: nn.Module | None = None, guidance_scale: float = 1.0,
+        **net_kwargs
     ):
         r"""Last step in integration. 
         This interface is exposed since lots of samplers have special treatment for the last step:
@@ -89,6 +92,7 @@ class Samplers(ABC):
         - t_last: last time step. Note: model is never evaluated at this step.
         - g_net: guidance network.
         - guidance_scale: scale of guidance.
+        - net_kwargs: extra net args.
 
         Return:
         - x_last: final state.
@@ -122,6 +126,7 @@ class Samplers(ABC):
         self, net: nn.Module, x: jnp.ndarray,
         g_net: nn.Module | None = None, guidance_scale: float = 1.0,
         num_sampling_steps: int | None = None,
+        **net_kwargs
     ) -> jnp.ndarray:
         r"""Main sample loop
 
@@ -131,6 +136,7 @@ class Samplers(ABC):
         - t: current time.
         - g_net: guidance network.
         - guidance_scale: scale of guidance.
+        - net_kwargs: extra net args.
 
         Return:
         - x_final: final clean state.
@@ -144,11 +150,11 @@ class Samplers(ABC):
 
         def _fn(carry, t_next):
             x_curr, t_curr = carry
-            x_next = self.forward(net, x_curr, t_curr, t_next, g_net, guidance_scale)
+            x_next = self.forward(net, x_curr, t_curr, t_next, g_net, guidance_scale, **net_kwargs)
             return (x_next, t_next), x_next
 
         (x_curr, _), _ = jax.lax.scan(_fn, (x, timegrid[0]), timegrid[1:-1])
-        x_final = self.last_step(net, x_curr, timegrid[-2], timegrid[-1], g_net, guidance_scale)
+        x_final = self.last_step(net, x_curr, timegrid[-2], timegrid[-1], g_net, guidance_scale, **net_kwargs)
 
         return x_final
     
@@ -198,18 +204,20 @@ class EulerSampler(Samplers):
     
     def forward(
         self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
-        g_net: nn.Module | None = None, guidance_scale: float = 1.0
+        g_net: nn.Module | None = None, guidance_scale: float = 1.0,
+        **net_kwargs
     ) -> jnp.ndarray:
         
         t_curr = self.expand_right(t_curr, x)
 
-        net_out = net(x, t_curr)
+        net_out = net(x, t_curr, **net_kwargs)
 
         if g_net is None:
             g_net = net
         
         def guided_fn(x, t):
-            g_net_out = g_net(x, t)
+            # TODO: consider using different set of args for g_net
+            g_net_out = g_net(x, t, **net_kwargs)
             return g_net_out + guidance_scale * (net_out - g_net_out)
 
         def unguided_fn(x, t):
@@ -224,6 +232,7 @@ class EulerSampler(Samplers):
     
     def last_step(
         self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
-        g_net: nn.Module | None = None, guidance_scale: float = 1.0
+        g_net: nn.Module | None = None, guidance_scale: float = 1.0,
+        **net_kwargs
     ) -> jnp.ndarray:
-        return self.forward(net, x, t_curr, t_next, g_net, guidance_scale)
+        return self.forward(net, x, t_curr, t_next, g_net, guidance_scale, **net_kwargs)
