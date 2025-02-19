@@ -192,15 +192,47 @@ class EulerSampler(Samplers):
     First Order Deterministic Sampler.
     """
 
-    def __init__(
-        self,
-        num_sampling_steps: int,
-        sampling_time_dist: SamplingTimeDistType = SamplingTimeDistType.EXP,
-        sampling_time_kwargs: dict = {},
-    ):
-        super().__init__(
-            num_sampling_steps, sampling_time_dist, sampling_time_kwargs
+    def forward(
+        self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
+        g_net: nn.Module | None = None, guidance_scale: float = 1.0,
+        **net_kwargs
+    ) -> jnp.ndarray:
+        
+        t_curr = self.expand_right(t_curr, x)
+
+        net_out = net(x, t_curr, **net_kwargs)
+
+        if g_net is None:
+            g_net = net
+        
+        def guided_fn(x, t):
+            # TODO: consider using different set of args for g_net
+            g_net_out = g_net(x, t, **net_kwargs)
+            return g_net_out + guidance_scale * (net_out - g_net_out)
+
+        def unguided_fn(x, t):
+            return net_out
+        
+        d_curr = jax.lax.cond(
+            guidance_scale == 0., unguided_fn, guided_fn, x, t_curr
         )
+
+        dt = t_next - t_curr
+        return x + d_curr * dt
+    
+    def last_step(
+        self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
+        g_net: nn.Module | None = None, guidance_scale: float = 1.0,
+        **net_kwargs
+    ) -> jnp.ndarray:
+        return self.forward(net, x, t_curr, t_next, g_net, guidance_scale, **net_kwargs)
+    
+
+class HeunSampler(Samplers):
+    r"""Heun Sampler.
+
+    Second Order Deterministic Sampler.
+    """
     
     def forward(
         self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
@@ -223,16 +255,45 @@ class EulerSampler(Samplers):
         def unguided_fn(x, t):
             return net_out
         
-        d_cur = jax.lax.cond(
+        d_curr = jax.lax.cond(
             guidance_scale == 0., unguided_fn, guided_fn, x, t_curr
         )
 
         dt = t_next - t_curr
-        return x + d_cur * dt
+        x_next = x + d_curr * dt
+
+        # Heun's Method
+        d_next = jax.lax.cond(
+            guidance_scale == 0., unguided_fn, guided_fn, x_next, t_next
+        )
+
+        return x + 0.5 * dt * (d_curr + d_next)
     
     def last_step(
         self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
         g_net: nn.Module | None = None, guidance_scale: float = 1.0,
         **net_kwargs
     ) -> jnp.ndarray:
-        return self.forward(net, x, t_curr, t_next, g_net, guidance_scale, **net_kwargs)
+        # Heun's last step is one first order Euler step
+
+        t_curr = self.expand_right(t_curr, x)
+
+        net_out = net(x, t_curr, **net_kwargs)
+
+        if g_net is None:
+            g_net = net
+        
+        def guided_fn(x, t):
+            # TODO: consider using different set of args for g_net
+            g_net_out = g_net(x, t, **net_kwargs)
+            return g_net_out + guidance_scale * (net_out - g_net_out)
+
+        def unguided_fn(x, t):
+            return net_out
+        
+        d_curr = jax.lax.cond(
+            guidance_scale == 0., unguided_fn, guided_fn, x, t_curr
+        )
+
+        dt = t_next - t_curr
+        return x + d_curr * dt
