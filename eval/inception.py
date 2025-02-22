@@ -49,6 +49,8 @@ class InceptionV3(nn.Module):
     def setup(self):
         if self.pretrained:
             # ckpt_file = utils.download(self.ckpt_path)
+
+            # TODO: update to loading from gcs
             self.params_dict = pickle.load(open(
                 os.path.join(
                     os.path.expanduser('~'),

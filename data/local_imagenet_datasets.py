@@ -1,12 +1,16 @@
 """File containing the dataloading and data preprocessing. Torch Dataloading is used."""
 
 # built-in libs
+import functools
 import json
 import os
+import random as _random
 import zipfile
 
 # external libs
 from absl import logging
+import jax
+import ml_collections
 import numpy as np
 import PIL
 import torch
@@ -18,7 +22,7 @@ except ImportError:
     pyspng = None
 
 # deps
-import utils
+from data import utils
 
 
 class LatentDataset(torch.utils.data.Dataset):
@@ -217,3 +221,49 @@ def build_imagenet_dataset(
     logging.info(dataset)
 
     return dataset
+
+
+def seed_worker(worker_id, global_seed, offset_seed=0):
+    # worker_seed = torch.initial_seed() % 2**32 + jax.process_index() + offset_seed
+    worker_seed = (global_seed + worker_id +
+                   jax.process_index() + offset_seed) % 2**32
+    np.random.seed(worker_seed)
+    _random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+    logging.info('worker_id: {}, worker_seed: {}; offset_seed {}'.format(
+        worker_id, worker_seed, offset_seed))
+
+
+def build_imagenet_loader(
+    config: ml_collections.ConfigDict,
+    dataset: torch.utils.data.Dataset,
+    offset_seed: int = 0,
+) -> torch.utils.data.DataLoader:
+    """Build loader for torch Dataset."""
+    
+    batch_size = config.data.batch_size
+    local_batch_size = batch_size // jax.process_count()
+
+    sampler = torch.utils.data.DistributedSampler(
+        dataset,
+        num_replicas=jax.process_count(),
+        rank=jax.process_index(),
+        shuffle=True,
+        seed=config.data.seed,
+    )
+
+    rng_torch = torch.Generator()
+    rng_torch.manual_seed(offset_seed)
+    loader = torch.utils.data.DataLoader(
+        dataset, sampler=sampler,
+        batch_size=local_batch_size,
+        num_workers=config.torchload.num_workers,
+        pin_memory=True,
+        drop_last=True,
+        generator=rng_torch,
+        worker_init_fn=functools.partial(
+            seed_worker, offset_seed=offset_seed, global_seed=config.seed_pt),
+        persistent_workers=True,
+        timeout=1800.,
+    )
+    return loader
