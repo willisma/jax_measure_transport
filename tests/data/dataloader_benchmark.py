@@ -1,7 +1,8 @@
-"""File containing unittests for Local & WDS dataloading."""
+"""File containing benchmarking for WDS dataloading."""
 
 # built-in libs
 import unittest
+import time
 
 # external libs
 import jax
@@ -56,4 +57,38 @@ class TestWDS(unittest.TestCase):
 
 if __name__ == "__main__":
 
-    unittest.main()
+    jax.process_index()
+    jax.process_count()
+
+    BATCH_SIZE = 16
+    NUM_WORKERS = 8
+    IMG_SIZE = 256
+
+    config = ml_collections.ConfigDict(
+        {
+            'data': {
+                'batch_size': BATCH_SIZE,
+                'num_workers': NUM_WORKERS,
+            }
+        }
+    )
+    dataset = wds.build_imagenet_dataset(
+        is_train=True,
+        data_dir="/mnt/disks/data/imagenet_wds",
+        image_size=IMG_SIZE,
+    )
+    loader = wds.build_imagenet_loader(
+        config, dataset
+    )
+
+    sim_iter = 1e4
+    start_time = time.time()
+    for i, batch in enumerate(loader):
+        if i > sim_iter:
+            break
+        batch = utils.parse_batch(batch)
+        
+        del batch
+    
+    print(f"========== Batch: {BATCH_SIZE}, NUM_WORKERS: {NUM_WORKERS}, IMG_SIZE: {IMG_SIZE} ==========")
+    print("Time taken: ", (time.time() - start_time) / sim_iter)

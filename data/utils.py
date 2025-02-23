@@ -4,9 +4,11 @@
 import hashlib
 
 # external libs
+import jax
 import numpy as np
 import PIL
 from PIL import Image
+import torch
 from torchvision import transforms
 
 
@@ -42,6 +44,7 @@ def anything_to_seed(*args):
     seed_int = int.from_bytes(hash_bytes, 'big')
     return seed_int % (1 << 64)
 
+
 # Aligning with OpenAI ADM
 def center_crop_arr(pil_image: PIL.Image, image_size: int):
     # We are not on a new enough PIL to support the `reducing_gap`
@@ -62,6 +65,7 @@ def center_crop_arr(pil_image: PIL.Image, image_size: int):
     crop_x = (arr.shape[1] - image_size) // 2
     return Image.fromarray(arr[crop_y : crop_y + image_size, crop_x : crop_x + image_size])
 
+
 def build_transform(image_size: int):
     crop_fn = lambda x: center_crop_arr(x, image_size)
     transform = transforms.Compose([
@@ -70,3 +74,28 @@ def build_transform(image_size: int):
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])]
     )  # normalizes to [-1, 1]
     return transform
+
+
+def parse_batch(batch):
+    images, labels = batch
+    images = images.permute([0, 2, 3, 1])  # nchw -> nhwc
+    batch = {'images': images, 'labels': labels}
+    # to (local_devices, device_batch_size, height, width, 3)
+    batch = prepare_pt_data(batch)
+    return batch
+
+
+def prepare_pt_data(xs):
+    """Convert a input batch from PyTorch Tensors to numpy arrays."""
+    local_device_count = jax.local_device_count()
+
+    def _prepare(x):
+        # Use _numpy() for zero-copy conversion between TF and NumPy.
+        if isinstance(x, torch.Tensor):
+            x = x.numpy()  # pylint: disable=protected-access
+
+        # reshape (host_batch_size, height, width, 3) to
+        # (local_devices, device_batch_size, height, width, 3)
+        return x.reshape((local_device_count, -1) + x.shape[1:])
+
+    return jax.tree.map(_prepare, xs)

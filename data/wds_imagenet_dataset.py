@@ -1,9 +1,11 @@
 """File containing the WebDataset dataloading pipeline."""
 
 # built-in libs
+from itertools import islice
 
 # external libs
 from absl import logging
+import glob
 import jax
 import ml_collections
 import PIL
@@ -17,8 +19,11 @@ from data import utils
 # Main entry point for imagenet dataset
 def build_imagenet_dataset(
     is_train: bool, data_dir: str, image_size: int, file_path: str | None = None, latent_dataset: bool = False, shuffle_buffer: int = 1024
-) -> torch.util.data.IterableDataset:
+) -> torch.utils.data.IterableDataset:
     """Build the WebDataset for ImageNet. Code practice largely follows https://github.com/webdataset/webdataset/blob/main/examples/train-resnet50-multiray-wds.ipynb"""
+    split = "train" if is_train else "val"
+    data_dir = glob.glob(f"{data_dir}/imagenet1k-{split}-*.tar")
+
     if latent_dataset:
         # latent structure is
         # - data_dir/
@@ -38,16 +43,23 @@ def build_imagenet_dataset(
         transform = utils.build_transform(image_size)
 
         def wds_preprocess(sample):
-            return transform(sample['jpg']), sample['cls']
+            image, c = sample
+            return transform(image), c['label']
         
         def multiproc_splitter(urls):
+            # from https://github.com/webdataset/webdataset/blob/75bf1455d60cc8bcb2081a6a7b4a3b561f405a3a/webdataset/shardlists.py#L63
             proc_id, proc_num = jax.process_index(), jax.process_count()
-            return urls[proc_id::proc_num]
+            if proc_num > 1:
+                yield from islice(urls, proc_id, None, proc_num)
+            else:
+                yield from urls
 
         # shard to multiprocesses
-        dataset = wds.WebDataset(data_dir, resampled=True, shardshuffle=True, nodesplitter=multiproc_splitter)
+        dataset = wds.WebDataset(
+            data_dir, shardshuffle=True, workersplitter=wds.split_by_worker, nodesplitter=multiproc_splitter
+        )
         # data decoding
-        dataset = dataset.shuffle(shuffle_buffer).decode("pil").to_tuple("png", "json")
+        dataset = dataset.shuffle(shuffle_buffer).decode("pil").to_tuple("jpg", "json")
         # data preprocessing
         dataset = dataset.map(wds_preprocess)
 
