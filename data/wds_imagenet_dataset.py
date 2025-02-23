@@ -36,15 +36,9 @@ def build_imagenet_dataset(
         #     ...
         
         transform = utils.build_transform(image_size)
+
         def wds_preprocess(sample):
-            image, json = sample
-            try: 
-                # check this path
-                label = json['annotations'][0]['category_id']
-            except Exception:
-                label = 1000
-            
-            return transform(image), label
+            return transform(sample['jpg']), sample['cls']
         
         def multiproc_splitter(urls):
             proc_id, proc_num = jax.process_index(), jax.process_count()
@@ -56,6 +50,8 @@ def build_imagenet_dataset(
         dataset = dataset.shuffle(shuffle_buffer).decode("pil").to_tuple("png", "json")
         # data preprocessing
         dataset = dataset.map(wds_preprocess)
+
+        # from torch to jax
 
     logging.info(dataset)
     return dataset

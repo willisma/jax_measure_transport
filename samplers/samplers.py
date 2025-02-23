@@ -171,12 +171,13 @@ class Samplers(ABC):
         return default_kwargs
                 
 
-    def expand_right(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+    def expand_right(self, x: jnp.ndarray | float, y: jnp.ndarray) -> jnp.ndarray:
         """
             Expand x to match the batch dimension
             and broadcast x to the right to match the shape of y.
         """
-        assert len(y.shape) >= x.ndim
+        if isinstance(x, jnp.ndarray):
+            assert len(y.shape) >= x.ndim
         return jnp.ones((y.shape[0],)) * x
 
 
@@ -218,7 +219,7 @@ class EulerSampler(Samplers):
         )
 
         dt = t_next - t_curr
-        return x + d_curr * dt
+        return x + d_curr * self.bcast_right(dt, d_curr)
     
     def last_step(
         self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
@@ -260,14 +261,14 @@ class HeunSampler(Samplers):
         )
 
         dt = t_next - t_curr
-        x_next = x + d_curr * dt
+        x_next = x + d_curr * self.bcast_right(dt, d_curr)
 
         # Heun's Method
         d_next = jax.lax.cond(
             guidance_scale == 1., unguided_fn, guided_fn, x_next, t_next
         )
 
-        return x + 0.5 * dt * (d_curr + d_next)
+        return x + 0.5 * self.bcast_right(dt, d_curr) * (d_curr + d_next)
     
     def last_step(
         self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
@@ -296,4 +297,4 @@ class HeunSampler(Samplers):
         )
 
         dt = t_next - t_curr
-        return x + d_curr * dt
+        return x + d_curr * self.bcast_right(dt, d_curr)

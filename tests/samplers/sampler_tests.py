@@ -24,25 +24,29 @@ class DummyMlp(nn.Module):
 class TestEulerSampler(unittest.TestCase):
     
     def setUp(self):
-        self.fn = DummyMlp(in_dim=3)
+        self.mlp = DummyMlp(in_dim=3)
         self.sampler = EulerSampler(
-            num_sampling_steps=32,
+            num_sampling_steps=1000,
             sampling_time_dist=SamplingTimeDistType.UNIFORM,
         )
 
         # equivalent ode is dx = x dt --> x(t) = e^t + C
         self.interface = SiTInterface(
-            network=self.fn,
+            network=self.mlp,
         )
         self.params = self.interface.init(
-            jax.random.PRNGKey(0), jnp.ones((4, 64, 64, 3)), jnp.ones((4, 64, 64, 3)), jnp.ones((4, 64, 64, 3))
+            jax.random.PRNGKey(0), jnp.ones((4, 64, 64, 3))
         )
         self.rng = jax.random.PRNGKey(0)
         self.shape = (16, 64, 64, 3)
 
+        def fn(x, t):
+            return self.interface.apply(self.params, x, t, method='pred')
+        self.fn = fn
+
     def test_forward(self):
         x = jax.random.normal(self.rng, self.shape)
-        t_curr = 1
+        t_curr = 1.
         t_delta = 0.1
         x_next = self.sampler.forward(
             net=self.fn,
@@ -71,7 +75,8 @@ class TestEulerSampler(unittest.TestCase):
         )
         
     def test_sample(self):
-        x = jnp.zeros_like(self.shape)
+        x = jnp.ones(self.shape)
+
         x_samples = self.sampler.sample(
             net=self.fn,
             x=x,
@@ -79,34 +84,39 @@ class TestEulerSampler(unittest.TestCase):
 
         self.assertEqual(x_samples.shape, x.shape)
 
-        # x(1) = e + C = 0 --> C = -e
-        # x(0) = 1 - e
+        # x(1) = Ce = 1 --> C = 1 / e
+        # x(0) = C = 1 / e
         # assume discretization error of ~O(h^2)
         self.assertTrue(
-            jnp.allclose(x_samples, 1 - jnp.exp(1), atol=1e-2)
+            jnp.allclose(x_samples, 1 / jnp.exp(1), atol=1e-3)
         )
 
 class TestHeunSampler(unittest.TestCase):
 
     def setUp(self):
-        self.fn = DummyMlp(in_dim=3)
+        self.mlp = DummyMlp(in_dim=3)
         self.sampler = HeunSampler(
-            num_sampling_steps=32,
+            num_sampling_steps=500,
             sampling_time_dist=SamplingTimeDistType.UNIFORM,
         )
 
         # equivalent ode is dx = x dt --> x(t) = e^t + C
         self.interface = SiTInterface(
-            network=self.fn,
+            network=self.mlp,
         )
         self.params = self.interface.init(
-            jax.random.PRNGKey(0), jnp.ones((4, 64, 64, 3)), jnp.ones((4, 64, 64, 3)), jnp.ones((4, 64, 64, 3))
+            jax.random.PRNGKey(0), jnp.ones((4, 64, 64, 3))
         )
         self.rng = jax.random.PRNGKey(0)
         self.shape = (16, 64, 64, 3)
+
+        def fn(x, t):
+            return self.interface.apply(self.params, x, t, method='pred')
+        self.fn = fn
     
     def test_sample(self):
-        x = jnp.zeros_like(self.shape)
+        x = jnp.ones(self.shape)
+
         x_samples = self.sampler.sample(
             net=self.fn,
             x=x,
@@ -114,9 +124,12 @@ class TestHeunSampler(unittest.TestCase):
 
         self.assertEqual(x_samples.shape, x.shape)
 
-        # x(1) = e + C = 0 --> C = -e
-        # x(0) = 1 - e
+        # x(1) = Ce = 1 --> C = 1 / e
+        # x(0) = C = 1 / e
         # assume discretization error of ~O(h^3)
         self.assertTrue(
-            jnp.allclose(x_samples, 1 - jnp.exp(1), atol=1e-3)
+            jnp.allclose(x_samples, 1 / jnp.exp(1), atol=1e-3)
         )
+
+if __name__ == "__main__":
+    unittest.main()
