@@ -214,7 +214,7 @@ class EulerSampler(Samplers):
             return net_out
         
         d_curr = jax.lax.cond(
-            guidance_scale == 0., unguided_fn, guided_fn, x, t_curr
+            guidance_scale == 1., unguided_fn, guided_fn, x, t_curr
         )
 
         dt = t_next - t_curr
@@ -256,7 +256,7 @@ class HeunSampler(Samplers):
             return net_out
         
         d_curr = jax.lax.cond(
-            guidance_scale == 0., unguided_fn, guided_fn, x, t_curr
+            guidance_scale == 1., unguided_fn, guided_fn, x, t_curr
         )
 
         dt = t_next - t_curr
@@ -264,7 +264,7 @@ class HeunSampler(Samplers):
 
         # Heun's Method
         d_next = jax.lax.cond(
-            guidance_scale == 0., unguided_fn, guided_fn, x_next, t_next
+            guidance_scale == 1., unguided_fn, guided_fn, x_next, t_next
         )
 
         return x + 0.5 * dt * (d_curr + d_next)
