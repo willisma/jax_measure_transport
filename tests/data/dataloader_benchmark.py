@@ -8,6 +8,7 @@ import time
 import jax
 import jax.numpy as jnp
 import ml_collections
+from tqdm import tqdm
 
 # deps
 from data import utils
@@ -60,9 +61,9 @@ if __name__ == "__main__":
     jax.process_index()
     jax.process_count()
 
-    BATCH_SIZE = 16
-    NUM_WORKERS = 8
-    IMG_SIZE = 256
+    BATCH_SIZE = 64
+    NUM_WORKERS = 1
+    IMG_SIZE = 32
 
     config = ml_collections.ConfigDict(
         {
@@ -78,7 +79,7 @@ if __name__ == "__main__":
         image_size=IMG_SIZE,
     )
     loader = wds.build_imagenet_loader(
-        config, dataset
+        config, dataset, use_torch=True
     )
 
     sim_iter = 1e4
