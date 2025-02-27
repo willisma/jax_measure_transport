@@ -78,12 +78,13 @@ class TestWDSDDP(unittest.TestCase):
             for i, batch in tqdm(enumerate(loader)):
                 sample, label = batch
 
-                self.assertEqual(sample.shape, (self.batch_size, 3, 256, 256))
-                self.assertEqual(label.shape, (self.batch_size,))
-
                 if sample.shape[0] != self.batch_size:
                     num_incomplete_batch += 1
                     continue
+
+                self.assertEqual(sample.shape, (self.batch_size, 3, 256, 256))
+                self.assertEqual(label.shape, (self.batch_size,))
+
                 total_num_samples += sample.shape[0]
                 for s in sample:
                     total_samples_hash.add(hash_array(np.asarray(s)))
@@ -124,8 +125,8 @@ class TestCustomWDSDDP(unittest.TestCase):
                 is_train=True,
                 data_dir="/mnt/disks/data/imagenet_wds",
                 image_size=256,
-                world_size=1,
-                rank=0
+                world_size=self.world_size,
+                rank=rank
             )
 
             loader = wds.build_imagenet_loader(
@@ -136,12 +137,12 @@ class TestCustomWDSDDP(unittest.TestCase):
             for i, batch in tqdm(enumerate(loader)):
                 sample, label = batch
 
-                self.assertEqual(sample.shape, (self.batch_size, 3, 256, 256))
-                self.assertEqual(label.shape, (self.batch_size,))
-
                 if sample.shape[0] != self.batch_size:
                     num_incomplete_batch += 1
                     continue
+
+                self.assertEqual(sample.shape, (self.batch_size, 3, 256, 256))
+                self.assertEqual(label.shape, (self.batch_size,))
                 total_num_samples += sample.shape[0]
                 for s in sample:
                     total_samples_hash.add(hash_array(np.asarray(s)))

@@ -26,10 +26,11 @@ def build_imagenet_dataset(
     shuffle_buffer: int = 1024,
     world_size: int = 1,
     rank: int = 0,
+    testing: bool = False,
 ) -> torch.utils.data.IterableDataset:
     """Build the WebDataset for ImageNet. Code practice largely follows https://github.com/webdataset/webdataset/blob/main/examples/train-resnet50-multiray-wds.ipynb"""
     split = "train" if is_train else "val"
-    data_dir = glob.glob(f"{data_dir}/imagenet1k-{split}-*.tar")
+    data_dir = glob.glob(f"{data_dir}/imagenet1k-{split}-*.tar") if not testing else glob.glob(f"{data_dir}/{split}-*.tar")
 
     if latent_dataset:
         # latent structure is
