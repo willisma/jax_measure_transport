@@ -24,7 +24,6 @@ def build_imagenet_dataset(
     file_path: str | None = None,
     latent_dataset: bool = False,
     shuffle_buffer: int = 1024,
-    debug: bool = False,
     world_size: int = 1,
     rank: int = 0,
 ) -> torch.utils.data.IterableDataset:
@@ -53,23 +52,14 @@ def build_imagenet_dataset(
         def wds_preprocess(sample):
             image, c = sample
             return transform(image), c['label']
-        
-        if debug:
-            def multiproc_splitter(urls):
-                # from https://github.com/webdataset/webdataset/blob/75bf1455d60cc8bcb2081a6a7b4a3b561f405a3a/webdataset/shardlists.py#L63
-                proc_id, proc_num = rank, world_size
-                if proc_num > 1:
-                    yield from islice(urls, proc_id, None, proc_num)
-                else:
-                    yield from urls
-        else:
-            def multiproc_splitter(urls):
-                # from https://github.com/webdataset/webdataset/blob/75bf1455d60cc8bcb2081a6a7b4a3b561f405a3a/webdataset/shardlists.py#L63
-                proc_id, proc_num = jax.process_index(), jax.process_count()
-                if proc_num > 1:
-                    yield from islice(urls, proc_id, None, proc_num)
-                else:
-                    yield from urls
+
+        def multiproc_splitter(urls):
+            # from https://github.com/webdataset/webdataset/blob/75bf1455d60cc8bcb2081a6a7b4a3b561f405a3a/webdataset/shardlists.py#L63
+            proc_id, proc_num = rank, world_size
+            if proc_num > 1:
+                yield from islice(urls, proc_id, None, proc_num)
+            else:
+                yield from urls
 
         # shard to multiprocesses
         dataset = wds.WebDataset(
@@ -92,10 +82,10 @@ def build_imagenet_loader(
     use_torch: bool = False
 ):
     """Build loader for WebDataset."""
-    batch_size = config.data.batch_size
+    batch_size = config.data.batch_size // jax.process_count()
     num_workers = config.data.num_workers
     
-    # dataset = dataset.batched(batch_size)
+    assert num_workers <= 1, "WebDataset does not support multi-process dataloading yet."
 
     if use_torch:
         loader = torch.utils.data.DataLoader(
@@ -103,7 +93,7 @@ def build_imagenet_loader(
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
-            drop_last=True,
+            drop_last=False,
             persistent_workers=True,
             timeout=1800.,
         )
