@@ -40,15 +40,14 @@ class TestEulerSampler(unittest.TestCase):
         self.rng = jax.random.PRNGKey(0)
         self.shape = (16, 64, 64, 3)
 
-        def fn(x, t):
-            return self.interface.apply(self.params, x, t, method='pred')
-        self.fn = fn
+        self.fn = self.interface.bind(self.params)
 
     def test_forward(self):
         x = jax.random.normal(self.rng, self.shape)
         t_curr = 1.
         t_delta = 0.1
         x_next = self.sampler.forward(
+            rng=self.rng,
             net=self.fn,
             x=x,
             t_curr=t_curr,
@@ -58,10 +57,11 @@ class TestEulerSampler(unittest.TestCase):
         self.assertEqual(x_next.shape, x.shape)
 
         self.assertTrue(
-            jnp.allclose(x_next, x - t_delta * self.fn(x, t_curr), atol=1e-3)
+            jnp.allclose(x_next, x - t_delta * self.fn.pred(x, t_curr), atol=1e-3)
         )
 
-        x_last = self.sampler.forward(
+        x_last = self.sampler.last_step(
+            rng=self.rng,
             net=self.fn,
             x=x,
             t_curr=t_curr,
@@ -71,13 +71,14 @@ class TestEulerSampler(unittest.TestCase):
         self.assertEqual(x_last.shape, x.shape)
 
         self.assertTrue(
-            jnp.allclose(x_last, x - t_delta * self.fn(x, t_curr), atol=1e-3)
+            jnp.allclose(x_last, x - t_delta * self.fn.pred(x, t_curr), atol=1e-3)
         )
         
     def test_sample(self):
         x = jnp.ones(self.shape)
 
         x_samples = self.sampler.sample(
+            rng=self.rng,
             net=self.fn,
             x=x,
         )
@@ -110,14 +111,13 @@ class TestHeunSampler(unittest.TestCase):
         self.rng = jax.random.PRNGKey(0)
         self.shape = (16, 64, 64, 3)
 
-        def fn(x, t):
-            return self.interface.apply(self.params, x, t, method='pred')
-        self.fn = fn
+        self.fn = self.interface.bind(self.params)
     
     def test_sample(self):
         x = jnp.ones(self.shape)
 
         x_samples = self.sampler.sample(
+            rng=self.rng,
             net=self.fn,
             x=x,
         )

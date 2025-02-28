@@ -4,6 +4,7 @@
 from abc import ABC, abstractmethod
 import copy
 from enum import Enum
+from typing import Callable
 
 # external libs
 import flax.linen as nn
@@ -14,7 +15,7 @@ import jax.numpy as jnp
 class SamplingTimeDistType(Enum):
     """Class for Sampling Time Distribution Types."""
     UNIFORM = 1
-    EXP = 2
+    EXP     = 2
 
     # TODO: Add more sampling time distribution types
 
@@ -45,7 +46,6 @@ class Samplers(ABC):
         num_sampling_steps: int,
         sampling_time_dist: SamplingTimeDistType,
         sampling_time_kwargs: dict = {},
-
     ):
         self.num_sampling_steps = num_sampling_steps
         self.sampling_time_dist = sampling_time_dist
@@ -123,7 +123,7 @@ class Samplers(ABC):
             raise ValueError(f"Sampling Time Distribution {self.sampling_time_dist} not supported.")
 
     def sample(
-        self, net: nn.Module, x: jnp.ndarray,
+        self, rng, net: nn.Module, x: jnp.ndarray,
         g_net: nn.Module | None = None, guidance_scale: float = 1.0,
         num_sampling_steps: int | None = None,
         **net_kwargs
@@ -131,6 +131,7 @@ class Samplers(ABC):
         r"""Main sample loop
 
         Args:
+        - rng: random key for potentially stochastic samplers
         - net: network to integrate vector field with.
         - x: current state.
         - t: current time.
@@ -149,12 +150,15 @@ class Samplers(ABC):
             timegrid = self.sample_t(self.num_sampling_steps)
 
         def _fn(carry, t_next):
-            x_curr, t_curr = carry
-            x_next = self.forward(net, x_curr, t_curr, t_next, g_net, guidance_scale, **net_kwargs)
-            return (x_next, t_next), x_next
+            x_curr, t_curr, rng = carry
+            rng, cur_rng = jax.random.split(rng)
+            x_next = self.forward(
+                cur_rng, net, x_curr, t_curr, t_next, g_net, guidance_scale, **net_kwargs
+            )
+            return (x_next, t_next, rng), x_next
 
-        (x_curr, _), _ = jax.lax.scan(_fn, (x, timegrid[0]), timegrid[1:-1])
-        x_final = self.last_step(net, x_curr, timegrid[-2], timegrid[-1], g_net, guidance_scale, **net_kwargs)
+        (x_curr, _, rng), _ = jax.lax.scan(_fn, (x, timegrid[0], rng), timegrid[1:-1])
+        x_final = self.last_step(rng, net, x_curr, timegrid[-2], timegrid[-1], g_net, guidance_scale, **net_kwargs)
 
         return x_final
     
@@ -194,21 +198,21 @@ class EulerSampler(Samplers):
     """
 
     def forward(
-        self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
+        self, rng, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
         g_net: nn.Module | None = None, guidance_scale: float = 1.0,
         **net_kwargs
     ) -> jnp.ndarray:
-        
+        del rng
         t_curr = self.expand_right(t_curr, x)
 
-        net_out = net(x, t_curr, **net_kwargs)
+        net_out = net.pred(x, t_curr, **net_kwargs)
 
         if g_net is None:
             g_net = net
         
         def guided_fn(x, t):
             # TODO: consider using different set of args for g_net
-            g_net_out = g_net(x, t, **net_kwargs)
+            g_net_out = g_net.pred(x, t, **net_kwargs)
             return g_net_out + guidance_scale * (net_out - g_net_out)
 
         def unguided_fn(x, t):
@@ -222,11 +226,11 @@ class EulerSampler(Samplers):
         return x + d_curr * self.bcast_right(dt, d_curr)
     
     def last_step(
-        self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
+        self, rng, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
         g_net: nn.Module | None = None, guidance_scale: float = 1.0,
         **net_kwargs
     ) -> jnp.ndarray:
-        return self.forward(net, x, t_curr, t_next, g_net, guidance_scale, **net_kwargs)
+        return self.forward(rng, net, x, t_curr, t_next, g_net, guidance_scale, **net_kwargs)
     
 
 class HeunSampler(Samplers):
@@ -236,21 +240,21 @@ class HeunSampler(Samplers):
     """
     
     def forward(
-        self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
+        self, rng, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
         g_net: nn.Module | None = None, guidance_scale: float = 1.0,
         **net_kwargs
     ) -> jnp.ndarray:
-        
+        del rng
         t_curr = self.expand_right(t_curr, x)
 
-        net_out = net(x, t_curr, **net_kwargs)
+        net_out = net.pred(x, t_curr, **net_kwargs)
 
         if g_net is None:
             g_net = net
         
         def guided_fn(x, t):
             # TODO: consider using different set of args for g_net
-            g_net_out = g_net(x, t, **net_kwargs)
+            g_net_out = g_net.pred(x, t, **net_kwargs)
             return g_net_out + guidance_scale * (net_out - g_net_out)
 
         def unguided_fn(x, t):
@@ -271,22 +275,22 @@ class HeunSampler(Samplers):
         return x + 0.5 * self.bcast_right(dt, d_curr) * (d_curr + d_next)
     
     def last_step(
-        self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
+        self, rng, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
         g_net: nn.Module | None = None, guidance_scale: float = 1.0,
         **net_kwargs
     ) -> jnp.ndarray:
+        del rng
         # Heun's last step is one first order Euler step
-
         t_curr = self.expand_right(t_curr, x)
 
-        net_out = net(x, t_curr, **net_kwargs)
+        net_out = net.pred(x, t_curr, **net_kwargs)
 
         if g_net is None:
             g_net = net
         
         def guided_fn(x, t):
             # TODO: consider using different set of args for g_net
-            g_net_out = g_net(x, t, **net_kwargs)
+            g_net_out = g_net.pred(x, t, **net_kwargs)
             return g_net_out + guidance_scale * (net_out - g_net_out)
 
         def unguided_fn(x, t):
@@ -298,3 +302,157 @@ class HeunSampler(Samplers):
 
         dt = t_next - t_curr
         return x + d_curr * self.bcast_right(dt, d_curr)
+    
+
+class DiffusionCoeffType(Enum):
+    """Class for Sampling Time Distribution Types."""
+    CONSTANT = 1
+    KL       = 2
+    SIGMA    = 3
+    LINEAR   = 4
+    COS      = 5
+    SIN      = 6
+    CONCAVE  = 7
+    CONVEX   = 8
+
+    # TODO: Add more sampling time distribution types
+
+
+class EulerMaruyamaSampler(Samplers):
+    r"""EulerMaruyama Sampler.
+    
+    First Order Stochastic Sampler.
+    """
+
+    def __init__(
+        self,
+        num_sampling_steps: int,
+        sampling_time_dist: SamplingTimeDistType,
+        sampling_time_kwargs: dict = {},
+
+        # below are args for stochastic samplers
+        diffusion_coeff: DiffusionCoeffType | Callable[[jnp.ndarray], jnp.ndarray] = DiffusionCoeffType.KL,
+        diffusion_coeff_norm: float = 1.0
+    ):
+        super().__init__(
+            num_sampling_steps,
+            sampling_time_dist,
+            sampling_time_kwargs
+        )
+
+        self.diffusion_coeff_fn = self.instantiate_diffusion_coeff(
+            diffusion_coeff, diffusion_coeff_norm
+        )
+
+    def instantiate_diffusion_coeff(
+        self, coeff: DiffusionCoeffType | Callable[[jnp.ndarray], jnp.ndarray], norm: float
+    ):
+        """Instantiate the diffusion coefficient for SDE sampling.
+        
+        Args:
+        - diffusion_coeff: the desired diffusion coefficient. If a Callable is passed in, directly returned;
+            otherwise instantiate the coefficient function based on our default settings.
+        Returns:
+        - diffusion_coeff_fn w(t)
+        """
+
+        if type(coeff) == Callable:
+            return coeff
+        
+        choices = {
+            DiffusionCoeffType.CONSTANT: lambda t: norm,
+            DiffusionCoeffType.KL:       lambda t: norm * self.compute_drift(x, t)[1],
+            DiffusionCoeffType.SIGMA:    lambda t: norm * self.compute_sigma_t(t)[0],
+            DiffusionCoeffType.LINEAR:   lambda t: norm * (1 - t),
+            DiffusionCoeffType.COS:      lambda t: 0.25 * (norm * jnp.cos(jnp.pi * (1 - t)) + 1) ** 2,
+            DiffusionCoeffType.SIN:      lambda t: 0.25 * (norm * jnp.cos(jnp.pi * t) + 1) ** 2,
+            DiffusionCoeffType.CONCAVE:  lambda t: norm * jnp.sin(jnp.pi * t) ** 2,
+            DiffusionCoeffType.CONVEX:   lambda t: norm * jnp.cos(jnp.pi * t) ** 2,
+        }
+
+        try:
+            fn = choices[coeff]
+        except KeyError:
+            raise ValueError(f"Diffusion coefficient function {coeff} not supported. Consider using custom functions.")
+        
+        return fn
+
+    def drift(
+        self, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, **net_kwargs
+    ):
+        tangent = net.pred(x, t_curr, **net_kwargs)
+        score = net.score(x, t_curr, **net_kwargs)
+
+        return tangent - 0.5 * self.diffusion_coeff_fn(t_curr) * score
+
+    def forward(
+        self, rng, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
+        g_net: nn.Module | None = None, guidance_scale: float = 1.0,
+        **net_kwargs
+    ) -> jnp.ndarray:
+        
+        t_curr = self.expand_right(t_curr, x)
+        
+        net_out = self.drift(net, x, t_curr, **net_kwargs)
+
+        if g_net is None:
+            g_net = net
+        
+        def guided_fn(x, t):
+            # TODO: consider using different set of args for g_net
+            g_net_out = self.drift(g_net, x, t, **net_kwargs)
+            return g_net_out + guidance_scale * (net_out - g_net_out)
+
+        def unguided_fn(x, t):
+            return net_out
+        
+        d_curr = jax.lax.cond(
+            guidance_scale == 1., unguided_fn, guided_fn, x, t_curr
+        )
+
+        dt = t_next - t_curr
+
+        x_mean = x + d_curr * self.bcast_right(dt, d_curr)
+        wiener = jax.random.normal(rng, x_mean) * jnp.sqrt(jnp.abs(dt))
+        x = x_mean + self.bcast_right(
+            jnp.sqrt(self.diffusion_coeff_fn(t_curr))
+        ) * wiener
+
+        return x
+
+    def last_step(
+        self, rng, net: nn.Module, x: jnp.ndarray, t_curr: jnp.ndarray, t_next: jnp.ndarray,
+        g_net: nn.Module | None = None, guidance_scale: float = 1.0,
+        **net_kwargs
+    ) -> jnp.ndarray:
+        del rng
+        t_curr = self.expand_right(t_curr, x)
+
+        net_out = self.drift(net, x, t_curr, **net_kwargs)
+
+        if g_net is None:
+            g_net = net
+        
+        def guided_fn(x, t):
+            # TODO: consider using different set of args for g_net
+            g_net_out = self.drift(g_net, x, t, **net_kwargs)
+            return g_net_out + guidance_scale * (net_out - g_net_out)
+
+        def unguided_fn(x, t):
+            return net_out
+        
+        d_curr = jax.lax.cond(
+            guidance_scale == 1., unguided_fn, guided_fn, x, t_curr
+        )
+
+        dt = t_next - t_curr
+
+        return x + d_curr * self.bcast_right(dt, d_curr)
+
+
+class EDMSampler(Samplers):
+    r"""EDM Stochastic Sampler.
+    
+    Second Order Stochastic Sampler proposed in https://arxiv.org/abs/2206.00364
+    """
+    pass

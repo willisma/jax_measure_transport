@@ -97,6 +97,15 @@ class Interfaces(nn.Module, ABC):
         """
     
     @abstractmethod
+    def score(self, x_t: jnp.ndarray, t: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
+        r"""Transform ODE tangent to the Score Function \nabla \log p_t(x).
+        
+        Args:
+        - x_t: input noisy sample.
+        - t: current timestep.
+        """
+    
+    @abstractmethod
     def loss(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
         r"""Calculate loss for training.
         
@@ -172,6 +181,11 @@ class SiTInterface(Interfaces):
     def pred(self, x_t: jnp.ndarray, t: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
         return self.network(x_t, t, *args, **kwargs)
     
+    def score(self, x_t: jnp.ndarray, t: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
+        tangent = self.pred(x_t, t, *args, **kwargs)
+        t = self.bcast_right(t, x_t)
+        return -(x_t - (1 - t) * tangent) / t
+    
     def loss(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
         t = self.sample_t((x.shape[0],))
         n = self.sample_n(x.shape)
@@ -237,6 +251,11 @@ class EDMInterface(Interfaces):
     
     def pred(self, x_t: jnp.ndarray, t: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
         return (x_t - self.network(x_t, t, *args, **kwargs)) / self.bcast_right(t, x_t)
+    
+    def score(self, x_t: jnp.ndarray, t: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
+        tangent = self.pred(x_t, t, *args, **kwargs)
+        t = self.bcast_right(t, x_t)
+        return -(x_t - tangent) / (t ** 2)
     
     def loss(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
         sigma = self.sample_t((x.shape[0],))
