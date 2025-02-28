@@ -54,7 +54,14 @@ INIT_TABLE = {
 
 
 def modulation(x: jnp.ndarray, shift: jnp.ndarray, scale: jnp.ndarray) -> jnp.ndarray:
-    return x * (1 + scale) + shift
+    """Modulation for AdaLN.
+    
+    Args:
+    - x: input sequence (N, L, D)
+    - shift: (N, D)
+    - scale: (N, D)
+    """
+    return x * (1 + scale[:, None, ...]) + shift[:, None, ...]  # expand to make shape broadcastable
 
 
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):

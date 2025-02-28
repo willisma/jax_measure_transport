@@ -87,17 +87,17 @@ class ContinuousTimeEmbedder(nnx.Module):
     def __call__(self, t: jnp.ndarray) -> jnp.ndarray:
         # gaussian_basis should be registered as buffer
         t = t[..., None] * jax.lax.stop_gradient(self.gaussian_basis[None, :]) * 2 * np.pi
-        t = jnp.concatenate(
-            [jnp.sin(t), jnp.cos(t)], axis=-1
-        )
-        t = self.proj(t)
+        t = self.proj(jnp.concatenate([jnp.sin(t), jnp.cos(t)], axis=-1))
+        return t
 
 
 class ClassEmbedder(nnx.Module):
     """Lookup Table for class embeddings."""
 
     def __init__(
-        self, num_classes: int, hidden_size: int, dropout_prob: float, *, rngs: nnx.Rngs, dtype: jnp.dtype = jnp.float32
+        self, num_classes: int, hidden_size: int, dropout_prob: float,
+        *,
+        rngs: nnx.Rngs, dtype: jnp.dtype = jnp.float32, deterministic: bool = False
     ):
         take_null_class = dropout_prob > 0.0
         self.embedding_table = nnx.Embed(
@@ -107,20 +107,20 @@ class ClassEmbedder(nnx.Module):
         )
         self.num_classes = num_classes
         self.dropout_prob = dropout_prob
+        self.rngs = rngs
+        self.deterministic = deterministic
 
-    def token_drop(
-        self, labels: jnp.ndarray, *, rngs: nnx.Rngs, deterministic: bool = False
-    ) -> jnp.ndarray:
+    def token_drop(self, labels: jnp.ndarray) -> jnp.ndarray:
         """Drop tokens with probability `dropout_prob`."""
-        if not deterministic or self.dropout_prob == 0.0:
+        if not self.deterministic or self.dropout_prob == 0.0:
             return labels
-        key = rngs.label_dropout()
+        key = self.rngs.label_dropout()
         drop_ids = jax.random.uniform(key, (labels.shape[0],)) < self.dropout_prob
         labels = jnp.where(drop_ids, self.num_classes, labels)
         return labels
 
-    def __call__(self, labels: jnp.ndarray, *, rngs: nnx.Rngs, deterministic: bool = False) -> jnp.ndarray:
-        labels = self.token_drop(labels, train=deterministic, rngs=rngs)
+    def __call__(self, labels: jnp.ndarray) -> jnp.ndarray:
+        labels = self.token_drop(labels)
         return self.embedding_table(labels)
 
 
@@ -138,21 +138,26 @@ class PositionEmbedder(nnx.Module):
                 jax.random.normal(key, (1, h * w, c), dtype=dtype) * 0.02
             )
         else:
-            pe_array = utils.get_2d_sincos_pos_embed(c, (h, w), dtype=dtype)
+            pe_array = utils.get_2d_sincos_pos_embed(c, (h, w))
             self.pe = nnx.Param(
                 jnp.full((1, h * w, c), pe_array, dtype=dtype)
             )
+        
+        self.sincos = sincos
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        n, h, w, c = x.shape
         pe = jax.lax.stop_gradient(self.pe) if self.sincos else self.pe
-        return x + pe
+        return x.reshape((n, h * w, c)) + pe
 
 
 class MlpBlock(nnx.Module):
     """FFN Module for DiT."""
 
     def __init__(
-        self, hidden_size: int, mlp_dim: int, *, rngs: nnx.Rngs, dropout: float = 0.0, dtype: jnp.dtype = jnp.float32
+        self, hidden_size: int, mlp_dim: int,
+        *,
+        rngs: nnx.Rngs, dropout: float = 0.0, dtype: jnp.dtype = jnp.float32
     ):
         self.linear1 = nnx.Linear(
             hidden_size, mlp_dim,
@@ -215,10 +220,10 @@ class DiTBlock(nnx.Module):
             ),
         )
 
-    def __call__(self, x: jnp.ndarray, c) -> jnp.ndarray:
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_mod(c).split(6, axis=-1)
-        x = x + gate_msa * self.attn(utils.modulation(x, shift_msa, scale_msa))
-        x = x + gate_mlp * self.mlp(utils.modulation(x, shift_mlp, scale_mlp))
+    def __call__(self, x: jnp.ndarray, c: jnp.ndarray) -> jnp.ndarray:
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(self.adaLN_mod(c), 6, axis=-1)
+        x = x + gate_msa[:, None, ...] * self.attn(utils.modulation(x, shift_msa, scale_msa))
+        x = x + gate_mlp[:, None, ...] * self.mlp(utils.modulation(x, shift_mlp, scale_mlp))
         return x
 
 
@@ -247,8 +252,8 @@ class FinalLayer(nnx.Module):
             ),
         )
 
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        shift, scale = self.adaLN_mod(x).split(2, axis=-1)
+    def __call__(self, x: jnp.ndarray, c: jnp.ndarray) -> jnp.ndarray:
+        shift, scale = jnp.split(self.adaLN_mod(c), 2, axis=-1)
         x = utils.modulation(self.norm(x), shift, scale)
         return self.linear(x)
 
@@ -279,7 +284,7 @@ class DiT(nnx.Module):
 
         *,
         rngs: nnx.Rngs          = nnx.Rngs(0),
-        dtype: jnp.dtype        = jnp.float32
+        dtype: jnp.dtype        = jnp.float32,
     ):
         self.in_channels = in_channels
         self.out_channels = in_channels
@@ -299,32 +304,32 @@ class DiT(nnx.Module):
             rngs=rngs
         )
         self.x_embedder = PositionEmbedder(
-            (input_size, input_size, in_channels), sincos=True, dtype=jnp.float32
+            ((input_size // patch_size), (input_size // patch_size), hidden_size),
+            sincos=True, dtype=jnp.float32, rngs=rngs
         )
         self.t_embedder = ContinuousTimeEmbedder(
-            hidden_size, freq_embed_size=freq_embed_size, rngs=rngs, dtype=dtype
+            hidden_size, freq_embed_size=freq_embed_size, dtype=dtype, rngs=rngs
         )
         self.y_embedder = ClassEmbedder(
-            num_classes, hidden_size, class_dropout_prob, rngs=rngs, dtype=dtype
+            num_classes, hidden_size, class_dropout_prob, dtype=dtype, rngs=rngs
         )
 
         # consider using scan
         self.blocks = [
             DiTBlock(
                 hidden_size, num_heads, mlp_ratio,
-                rngs=rngs, dtype=dtype, mlp_dropout=mlp_dropout, attn_dropout=attn_dropout
+                dtype=dtype, mlp_dropout=mlp_dropout, attn_dropout=attn_dropout, rngs=rngs
             ) for _ in range(depth)
         ]
 
         self.final_layer = FinalLayer(
-            hidden_size, patch_size, self.out_channels, rngs=rngs, dtype=dtype
+            hidden_size, patch_size, self.out_channels, dtype=dtype, rngs=rngs
         )
     
     def __call__(self, x: jnp.ndarray, t: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
 
-        n, h, w, c = x.shape
-
-        x = self.x_embedder(self.x_proj(x).reshape((n, h * w, c)))
+        x = self.x_proj(x)
+        x = self.x_embedder(x)
         t = self.t_embedder(t)
         y = self.y_embedder(y)
         c = t + y
@@ -332,5 +337,5 @@ class DiT(nnx.Module):
         for block in self.blocks:
             x = block(x, c)
         
-        x = self.final_layer(x)
-        return utils.unpatchify(x, (self.patch_size, self.patch_size), self.out_channels)
+        x = self.final_layer(x, c)
+        return utils.unpatchify(x, patch_sizes=(self.patch_size, self.patch_size), channels=self.out_channels)
