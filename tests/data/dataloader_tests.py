@@ -10,6 +10,7 @@ import ml_collections
 
 # deps
 from data import utils
+from data import local_imagenet_dataset as lds
 from data import wds_imagenet_dataset as wds
 
 
@@ -53,6 +54,33 @@ class TestWDS(unittest.TestCase):
             jnp.all(batch['labels'] >= 0) and jnp.all(batch['labels'] < 1000)
         )
 
+
+class TestLatentDS(unittest.TestCase):
+
+    def setUp(self):
+        self.config = ml_collections.ConfigDict(
+            {
+                'data': {
+                    'batch_size': 16,
+                    'num_workers': 8,
+                }
+            }
+        )
+
+    def test_loader_in256(self):
+        dataset = lds.build_imagenet_dataset(
+            is_train=True,
+            data_dir="/mnt/disks/imagnet/prepared/imagenet_256_sd.zip",
+            image_size=256,
+            latent_dataset=True,
+        )
+        loader = lds.build_imagenet_loader(
+            self.config,
+            dataset,
+        )
+
+        batch = next(iter(loader))
+        print(batch)
 
 if __name__ == "__main__":
 

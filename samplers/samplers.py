@@ -315,8 +315,6 @@ class DiffusionCoeffType(Enum):
     CONCAVE  = 7
     CONVEX   = 8
 
-    # TODO: Add more sampling time distribution types
-
 
 class EulerMaruyamaSampler(Samplers):
     r"""EulerMaruyama Sampler.

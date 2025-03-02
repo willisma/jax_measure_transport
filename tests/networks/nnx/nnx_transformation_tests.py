@@ -95,7 +95,7 @@ if __name__ == "__main__":
     # flax rng defaults to two separate streamlines:
     # .params() & .dropout()
 
-    # calling flax.[attr]() will increment the counter of the rng by 1
+    # calling rngs.[attr]() will increment the counter of the rng by 1
     # equivalently, it's equal to jax.random.fold_in(jax.random.PRNGKey(seed), counter)
 
     rng1 = nnx.Rngs(params=0)
