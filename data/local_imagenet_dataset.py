@@ -257,12 +257,12 @@ def build_imagenet_loader(
     loader = torch.utils.data.DataLoader(
         dataset, sampler=sampler,
         batch_size=local_batch_size,
-        num_workers=config.torchload.num_workers,
+        num_workers=config.data.num_workers,
         pin_memory=True,
         drop_last=True,
         generator=rng_torch,
         worker_init_fn=functools.partial(
-            seed_worker, offset_seed=offset_seed, global_seed=config.seed_pt),
+            seed_worker, offset_seed=offset_seed, global_seed=config.data.seed_pt),
         persistent_workers=True,
         timeout=1800.,
     )
