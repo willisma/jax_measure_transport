@@ -2,11 +2,12 @@
 
 # built-in libs
 from abc import ABC, abstractmethod
+import dataclasses
 from enum import Enum
 
 # external libs
 import flax
-import flax.linen as nn
+from flax import nnx
 
 import jax
 import jax.numpy as jnp
@@ -21,7 +22,8 @@ class TrainingTimeDistType(Enum):
     # TODO: Add more training time distribution types
 
 
-class Interfaces(nn.Module, ABC):
+@dataclasses.dataclass(repr=False)
+class Interfaces(nnx.Module, ABC):
     r"""Base class for all measure transport interfaces.
     
     All interfaces be a wrapper around network backbone and should support:
@@ -35,8 +37,8 @@ class Interfaces(nn.Module, ABC):
     - 
     """
 
-    network: nn.Module
-    train_time_dist_type: TrainingTimeDistType = TrainingTimeDistType.UNIFORM
+    network: nnx.Module
+    train_time_dist_type: TrainingTimeDistType
 
     @abstractmethod
     def sample_t(self, shape: tuple[int, ...]) -> jnp.ndarray:
@@ -44,7 +46,7 @@ class Interfaces(nn.Module, ABC):
         
         Args:
         - shape: shape of timestep t.
-
+        
         Return:
         - t: sampled timestep t.
         """
@@ -117,6 +119,9 @@ class Interfaces(nn.Module, ABC):
         Return:
         - loss: calculated loss.
         """
+
+    def __call__(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
+        return self.loss(x, *args, **kwargs)
     
     ########## Helper Functions ##########
     @staticmethod
@@ -144,8 +149,8 @@ class SiTInterface(Interfaces):
     - x = xt + t * D
     """
 
-    network: nn.Module
-    train_time_dist_type: TrainingTimeDistType = TrainingTimeDistType.UNIFORM
+    network: nnx.Module
+    train_time_dist_type: TrainingTimeDistType
 
     # hyperparams
     t_mu: float = 0.
@@ -157,17 +162,19 @@ class SiTInterface(Interfaces):
     x_sigma: float = 0.5
 
     def sample_t(self, shape: tuple[int, ...]) -> jnp.ndarray:
-        rng = self.make_rng('time')
+        # rng = self.make_rng('time')
+        rng = self.network.rngs.time()
 
         if self.train_time_dist_type == TrainingTimeDistType.UNIFORM:
             return jax.random.uniform(rng, shape=shape)
         elif self.train_time_dist_type == TrainingTimeDistType.LOGNORMAL:
-            return jax.nn.sigmoid(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu)
+            return jax.nnx.sigmoid(jax.random.normal(rng, shape=shape) * self.t_sigma + self.t_mu)
         else:
             raise ValueError(f"Training Time Distribution Type {self.train_time_dist_type} not supported.")
     
     def sample_n(self, shape: tuple[int, ...]) -> jnp.ndarray:
-        rng = self.make_rng('noise')
+        # rng = self.make_rng('noise')
+        rng = self.network.rngs.noise()
 
         return jax.random.normal(rng, shape=shape) * self.n_sigma + self.n_mu
     
@@ -196,9 +203,6 @@ class SiTInterface(Interfaces):
         net_out = self.network(x_t, t, *args, **kwargs)
 
         return self.mean_flat((net_out - target) ** 2)
-    
-    def __call__(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
-        return self.loss(x, *args, **kwargs)
 
 
 class EDMInterface(Interfaces):
@@ -214,8 +218,8 @@ class EDMInterface(Interfaces):
     - x = D
     """
 
-    network: nn.Module
-    train_time_dist_type: TrainingTimeDistType = TrainingTimeDistType.LOGNORMAL
+    network: nnx.Module
+    train_time_dist_type: TrainingTimeDistType
 
     # hyperparams
     t_mu: float = -1.2
@@ -227,8 +231,7 @@ class EDMInterface(Interfaces):
     x_sigma: float = 0.5
 
     def sample_t(self, shape: tuple[int, ...]) -> jnp.ndarray:
-        rng = self.make_rng('time')
-
+        rng = self.network.rngs.time()
         if self.train_time_dist_type == TrainingTimeDistType.UNIFORM:
             return jax.random.uniform(rng, shape=shape)
         elif self.train_time_dist_type == TrainingTimeDistType.LOGNORMAL:
@@ -239,7 +242,7 @@ class EDMInterface(Interfaces):
             raise ValueError(f"Training Time Distribution Type {self.train_time_dist_type} not supported.")
     
     def sample_n(self, shape: tuple[int, ...]) -> jnp.ndarray:
-        rng = self.make_rng('noise')
+        rng = self.network.rngs.noise()
 
         return jax.random.normal(rng, shape=shape) * self.n_sigma + self.n_mu
     
@@ -274,9 +277,6 @@ class EDMInterface(Interfaces):
         D_x = self.bcast_right(c_skip, x_t) * x_t + self.bcast_right(c_out, F_x) * F_x  # D_x
 
         return self.mean_flat((D_x - target) ** 2)
-    
-    def __call__(self, x: jnp.ndarray, *args, **kwargs) -> jnp.ndarray:
-        return self.loss(x, *args, **kwargs)
 
 
 
