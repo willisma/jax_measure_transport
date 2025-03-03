@@ -63,14 +63,45 @@ class TestLatentDS(unittest.TestCase):
                 'data': {
                     'batch_size': 16,
                     'num_workers': 8,
+                    'seed': 0,
+                    'seed_pt': 0,
                 }
             }
+        )
+
+    def test_loader_in64(self):
+        dataset = lds.build_imagenet_dataset(
+            is_train=True,
+            data_dir="/mnt/disks/imagenet/prepared/imagenet_64",
+            image_size=64,
+            latent_dataset=True,
+        )
+        loader = lds.build_imagenet_loader(
+            self.config,
+            dataset,
+        )
+
+        batch = next(iter(loader))
+        batch = utils.parse_batch(batch)
+        self.assertEqual(batch['images'].shape, (jax.local_device_count(), 16 // jax.local_device_count(), 64, 64, 3))
+        self.assertEqual(batch['labels'].shape, (jax.local_device_count(), 16 // jax.local_device_count()))
+        
+        pixel_max = jnp.max(batch['images'])
+        pixel_min = jnp.min(batch['images'])
+
+        # default normalization is to [-1, 1]
+        print(pixel_max, pixel_min)
+        self.assertTrue(pixel_max == 255)
+        self.assertTrue(pixel_min == 0)
+
+        self.assertTrue(
+            jnp.all(batch['labels'] >= 0) and jnp.all(batch['labels'] < 1000)
         )
 
     def test_loader_in256(self):
         dataset = lds.build_imagenet_dataset(
             is_train=True,
-            data_dir="/mnt/disks/imagnet/prepared/imagenet_256_sd.zip",
+            data_dir="/mnt/disks/imagenet/prepared/imagenet_256",
             image_size=256,
             latent_dataset=True,
         )
@@ -80,7 +111,34 @@ class TestLatentDS(unittest.TestCase):
         )
 
         batch = next(iter(loader))
-        print(batch)
+        batch = utils.parse_batch(batch)
+        self.assertEqual(batch['images'].shape, (jax.local_device_count(), 16 // jax.local_device_count(), 32, 32, 8))
+        self.assertEqual(batch['labels'].shape, (jax.local_device_count(), 16 // jax.local_device_count()))
+
+        self.assertTrue(
+            jnp.all(batch['labels'] >= 0) and jnp.all(batch['labels'] < 1000)
+        )
+    
+    def test_loader_in512(self):
+        dataset = lds.build_imagenet_dataset(
+            is_train=True,
+            data_dir="/mnt/disks/imagenet/prepared/imagenet_512",
+            image_size=512,
+            latent_dataset=True,
+        )
+        loader = lds.build_imagenet_loader(
+            self.config,
+            dataset,
+        )
+
+        batch = next(iter(loader))
+        batch = utils.parse_batch(batch)
+        self.assertEqual(batch['images'].shape, (jax.local_device_count(), 16 // jax.local_device_count(), 64, 64, 8))
+        self.assertEqual(batch['labels'].shape, (jax.local_device_count(), 16 // jax.local_device_count()))
+
+        self.assertTrue(
+            jnp.all(batch['labels'] >= 0) and jnp.all(batch['labels'] < 1000)
+        )
 
 if __name__ == "__main__":
 
