@@ -8,13 +8,15 @@ import flax
 from flax import nnx
 import jax
 import jax.numpy as jnp
+import numpy as np
+import torch
 
 # deps
-from networks.transformers import dit_nnx
+from networks.transformers import dit_nnx, port_nnx_to_torch as port
 from tests.networks.dit import dit_torch
 
 
-def convert_flax_to_torch(flax_module, torch_module):
+def convert_flax_to_torch(flax_module: nnx.Module, torch_module: torch.nn.Module):
     """Convert flax.nnx module to torch module."""
 
 
@@ -33,37 +35,112 @@ class TestDiT(unittest.TestCase):
             num_heads=12,
             mlp_ratio=4.0,
             rngs=rngs,
+            continuous_time_embed=False
         )
+        self.nnx_model.eval()
+        _, self.nnx_state = nnx.split(self.nnx_model)
 
         self.th_model = dit_torch.DiT_B_2()
+        self.th_model.eval()
+        self.th_model.load_state_dict(port.convert_flax_to_torch(self.nnx_state.to_pure_dict()))
+
+        self.data_rng = jax.random.PRNGKey(42)
     
-    def test_embedders(self):
-        """Test consistency of embedders."""
-        pass
+    def assert_close(self, jax_arr: jnp.ndarray, th_arr: torch.Tensor, atol=1e-6, rtol=1e-5):
+        res = np.allclose(
+            np.asarray(jax_arr, dtype=jnp.float32),
+            th_arr.numpy().astype(jnp.float32),
+            atol=atol,
+            rtol=rtol
+        )
+        diff = np.max(
+            np.abs(
+                np.asarray(jax_arr, dtype=jnp.float32)
+                -
+                th_arr.numpy().astype(jnp.float32)
+            )
+        )
 
-    def test_blocks(self):
-        """Test consistency of blocks."""
-        pass
+        self.assertTrue(res, msg=f"Max diff: {diff}")
 
+    def test_x_embedders(self):
+        """Test consistency of x embedders."""
+        
+        # x_embedders
+        self.assert_close(
+            self.nnx_model.x_embedder.pe.value, self.th_model.pos_embed
+        )
 
+        # torch_x_embedder_param = port.convert_x_embedder(self.nnx_state)
+        # torch_x_embedder = self.th_model.x_embedder
+        # torch_x_embedder.load_state_dict(torch_x_embedder_param)
+
+        x_input = jax.random.normal(self.data_rng, (4, 32, 32, 4))
+        th_x_input = torch.from_numpy(np.asarray(x_input, dtype=np.float32).transpose(0, 3, 1, 2))
+        self.assert_close(
+            self.nnx_model.x_proj(x_input).reshape(4, 256, -1),
+            self.th_model.x_embedder(th_x_input),
+        )
+
+    def test_y_embedders(self):
+        """Test consistency of label embedders."""
+
+        y_input = jax.random.randint(self.data_rng, (4,), 0, 1000)
+        th_y_input = torch.from_numpy(np.asarray(y_input, dtype=np.int64))
+        self.assert_close(
+            self.nnx_model.y_embedder(y_input),
+            self.th_model.y_embedder(th_y_input, train=False),
+        )
     
+    def test_t_embedders(self):
+        """Test consistency of time embedders."""
+        
+        t_input = jax.random.uniform(self.data_rng, (4,)) * 1000
+        th_t_input = torch.from_numpy(np.asarray(t_input, dtype=np.float32))
+        self.assert_close(
+            self.nnx_model.t_embedder(t_input),
+            self.th_model.t_embedder(th_t_input),
+        )
+
+    def test_block(self):
+        """Test consistency of DiT block."""
+        
+        x_input = jax.random.normal(self.data_rng, (4, 256, 768))
+        th_x_input = torch.from_numpy(np.asarray(x_input, dtype=np.float32))
+
+        y_input = jax.random.randint(self.data_rng, (4,), 0, 1000)
+        c = self.nnx_model.y_embedder(y_input)
+        th_c = torch.from_numpy(np.asarray(c, dtype=np.float32))
+
+        # block
+
+        self.assert_close(
+            self.nnx_model.blocks[0](x_input, c),
+            self.th_model.blocks[0](th_x_input, th_c),
+        )
+
+
+    def test_forward(self):
+        """Test consistency of forward pass."""
+
+        x_input = jax.random.normal(self.data_rng, (4, 32, 32, 4))
+        th_x_input = torch.from_numpy(np.asarray(x_input, dtype=np.float32).transpose(0, 3, 1, 2))
+
+        y_input = jax.random.randint(self.data_rng, (4,), 0, 1000)
+        th_y_input = torch.from_numpy(np.asarray(y_input, dtype=np.int64))
+
+        t_input = jax.random.uniform(self.data_rng, (4,)) * 1000
+        th_t_input = torch.from_numpy(np.asarray(t_input, dtype=np.float32))
+
+        self.assert_close(
+            self.nnx_model(x_input, t_input, y_input).transpose(0, 3, 1, 2),
+            self.th_model(th_x_input, th_t_input, th_y_input),
+        )
+
 
 if __name__ == "__main__":
 
-    rngs = nnx.Rngs(params=0, dropout=0, label_dropout=0)
-    model = dit_nnx.DiT(
-        input_size=32,
-        patch_size=2,
-        in_channels=4,
-        hidden_size=768,
-        depth=12,
-        num_heads=12,
-        mlp_ratio=4.0,
-        rngs=rngs,
-    )
+    torch.set_grad_enabled(False)
 
-    nnx.display(model)
-
-    th_model = dit_torch.DiT_B_2()
-
-    print(th_model)
+    with jax.default_device(jax.devices("cpu")[0]):
+        unittest.main()

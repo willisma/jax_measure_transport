@@ -68,7 +68,7 @@ class ContinuousTimeEmbedder(nnx.Module):
         self.gaussian_basis = nnx.Param(
             jax.random.normal(key, (freq_embed_size // 2,)) * scale
         )
-        self.proj = nnx.Sequential(
+        self.mlp = nnx.Sequential(
             nnx.Linear(
                 freq_embed_size, hidden_size,
                 kernel_init=utils.INIT_TABLE['time_embed']['kernel'],
@@ -87,7 +87,7 @@ class ContinuousTimeEmbedder(nnx.Module):
     def __call__(self, t: jnp.ndarray) -> jnp.ndarray:
         # gaussian_basis should be registered as buffer
         t = t[..., None] * jax.lax.stop_gradient(self.gaussian_basis[None, :]) * 2 * np.pi
-        t = self.proj(jnp.concatenate([jnp.sin(t), jnp.cos(t)], axis=-1))
+        t = self.mlp(jnp.concatenate([jnp.sin(t), jnp.cos(t)], axis=-1))
         return t
 
 
@@ -263,28 +263,29 @@ class DiT(nnx.Module):
 
     def __init__(
         self,
-        input_size: int         = 32,
-        patch_size: int         = 2,
-        in_channels: int        = 4,
-        hidden_size: int        = 1152,
-        depth: int              = 28,
-        num_heads: int          = 16,
-        mlp_ratio: int          = 4.0,
+        input_size: int              = 32,
+        patch_size: int              = 2,
+        in_channels: int             = 4,
+        hidden_size: int             = 1152,
+        depth: int                   = 28,
+        num_heads: int               = 16,
+        mlp_ratio: int               = 4.0,
 
         # t embedding attributes
-        freq_embed_size: int    = 512,
+        continuous_time_embed: bool  = False,
+        freq_embed_size: int         = 256,
 
-        # y embedding attributes
-        num_classes: int        = 1000,
-        class_dropout_prob: int = 0.1,
+        # y embedding attributes     
+        num_classes: int             = 1000,
+        class_dropout_prob: int      = 0.1,
 
         # below are unused attributes
-        mlp_dropout: float      = 0.0,
-        attn_dropout: float     = 0.0,
+        mlp_dropout: float           = 0.0,
+        attn_dropout: float          = 0.0,
 
         *,
-        rngs: nnx.Rngs          = nnx.Rngs(0),
-        dtype: jnp.dtype        = jnp.float32,
+        rngs: nnx.Rngs               = nnx.Rngs(0),
+        dtype: jnp.dtype             = jnp.float32,
     ):
         self.in_channels = in_channels
         self.out_channels = in_channels
@@ -307,9 +308,15 @@ class DiT(nnx.Module):
             ((input_size // patch_size), (input_size // patch_size), hidden_size),
             sincos=True, dtype=jnp.float32, rngs=rngs
         )
-        self.t_embedder = ContinuousTimeEmbedder(
-            hidden_size, freq_embed_size=freq_embed_size, dtype=dtype, rngs=rngs
-        )
+        if continuous_time_embed:
+            self.t_embedder = ContinuousTimeEmbedder(
+                hidden_size, freq_embed_size=freq_embed_size, dtype=dtype, rngs=rngs
+            )
+        else:
+            self.t_embedder = DiscreteTimeEmbedder(
+                hidden_size, freq_embed_size=freq_embed_size, rngs=rngs, dtype=dtype
+            )
+
         self.y_embedder = ClassEmbedder(
             num_classes, hidden_size, class_dropout_prob, dtype=dtype, rngs=rngs
         )
