@@ -15,7 +15,7 @@ import orbax.checkpoint as ocp
 
 
 # TODO: update the following functions to support sharding.
-def init_checkpoint_manager(
+def build_checkpoint_manager(
     ckpt_dir: str,
     *,
     save_interval_steps: int,
