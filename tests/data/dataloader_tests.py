@@ -90,7 +90,6 @@ class TestLatentDS(unittest.TestCase):
         pixel_min = jnp.min(batch['images'])
 
         # default normalization is to [-1, 1]
-        print(pixel_max, pixel_min)
         self.assertTrue(pixel_max == 255)
         self.assertTrue(pixel_min == 0)
 

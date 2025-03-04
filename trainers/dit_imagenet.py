@@ -27,9 +27,7 @@ Batch = dict[str, jnp.ndarray]
 Interfaces = continuous.Interfaces
 
 
-@nnx.split_rngs(splits=jax.local_device_count(), only='dropout, time, noise, label_dropout')
 def train_step(
-    model: Interfaces,
     optimizer: nnx.Optimizer,
     metrics: nnx.MultiMetric,
     batch: Batch,
@@ -37,11 +35,12 @@ def train_step(
     """Training step for DiT on ImageNet. **All updates happened in-place.**
     
     Args:
-    - model: DiT model wrapped by Interfaces.
     - optimizer: optimizer for training.
     - metrics: metrics for training.
     - batch: batch of samples and labels.
     """
+
+    model = optimizer.model
     samples, labels = batch["samples"], batch["labels"]
 
     def loss_fn(model):
@@ -50,6 +49,7 @@ def train_step(
 
     grad_fn = nnx.value_and_grad(loss_fn)
     loss, grads = grad_fn(model)
+    grads = jax.lax.pmean(grads, axis_name='data')
     metrics.update(loss=loss)
     optimizer.update(grads)
 
@@ -93,7 +93,7 @@ def train_and_evaluate(
     step = ckpt_mngr.latest_step()
 
     restored_state = ckpt_util.restore_checkpoints(
-        workdir, step, nnx.split(optimizer)[-1], nnx.split(ema)[-1], mngr=ckpt_mngr
+        workdir, step, nnx.state(optimizer), nnx.state(ema), mngr=ckpt_mngr
     )
     optimizer = nnx.merge(optimizer, restored_state.state)
     ema = nnx.merge(ema, restored_state.ema_state)
@@ -106,14 +106,21 @@ def train_and_evaluate(
     state_axes = nnx.StateAxes(
         {'dropout': 0, 'time': 0, 'noise': 0, 'label_dropout': 0, ...: None}
     )
-    p_train_step = nnx.pmap(train_step, in_axes=(state_axes, 0), out_axes=0)
+    p_train_step = nnx.pmap(
+        nnx.split_rngs(
+            train_step,
+            splits=jax.local_device_count(),
+            only=['dropout', 'time', 'noise', 'label_dropout']
+        ),
+        in_axes=(state_axes, None, 0), out_axes=0, axis_name='data'
+    )
 
     metrics_history = defaultdict(list)
     train_metrics_last_t = time.time()
 
     for _ in range(config.total_steps):
 
-        batch = data_util.parse_batch(next(loader))
+        batch = data_util.parse_batch(next(iter(loader)))
         p_train_step(model, optimizer, metrics, batch)
 
         if config.get('log_every_steps'):
@@ -137,10 +144,10 @@ def train_and_evaluate(
         
         if (step + 1) % config.save_every_steps == 0 or step + 1 == config.total_steps:
             ckpt_util.save_checkpoints(
-                workdir, step + 1, nnx.split(optimizer)[-1], nnx.split(ema)[-1], mngr=ckpt_mngr
+                workdir, step + 1, nnx.state(optimizer), nnx.state(ema), mngr=ckpt_mngr
             )
 
-            assert step + 1 == int(nnx.split(optimizer)[-1].step[0])
+            assert step + 1 == int(nnx.state(optimizer).step[0])
             
         step += 1
     

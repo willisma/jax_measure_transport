@@ -5,6 +5,7 @@ import functools
 import json
 import os
 import random as _random
+import warnings
 import zipfile
 
 # external libs
@@ -181,7 +182,33 @@ class ValDataset(torch.utils.data.Dataset):
         if self.transform is not None:
             image = self.transform(image)
         label = self.labels[idx]
-        return image, label 
+        return image, label
+
+
+class InfiniteSampler(torch.utils.data.Sampler):
+    def __init__(self, dataset, rank=0, num_replicas=1, shuffle=True, seed=0, start_idx=0):
+        assert len(dataset) > 0
+        assert num_replicas > 0
+        assert 0 <= rank < num_replicas
+        warnings.filterwarnings('ignore', '`data_source` argument is not used and will be removed')
+        super().__init__(dataset)
+        self._dataset_size = len(dataset)
+        self._start_idx = start_idx + rank
+        self._stride = num_replicas
+        self._shuffle = shuffle
+        self._seed = [utils.anything_to_seed('sampler'), seed]
+
+    def __iter__(self):
+        idx = self._start_idx
+        epoch = None
+        while True:
+            if epoch != idx // self._dataset_size:
+                epoch = idx // self._dataset_size
+                order = np.arange(self._dataset_size)
+                if self._shuffle:
+                    np.random.default_rng([epoch, *self._seed]).shuffle(order)
+            yield int(order[idx % self._dataset_size])
+            idx += self._stride
 
 
 # Main entry point for imagenet dataset
@@ -244,7 +271,7 @@ def build_imagenet_loader(
     batch_size = config.data.batch_size
     local_batch_size = batch_size // jax.process_count()
 
-    sampler = torch.utils.data.DistributedSampler(
+    sampler = InfiniteSampler(
         dataset,
         num_replicas=jax.process_count(),
         rank=jax.process_index(),
